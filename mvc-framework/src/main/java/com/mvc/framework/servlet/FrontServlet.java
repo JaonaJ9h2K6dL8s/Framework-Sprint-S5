@@ -1,5 +1,6 @@
 package com.mvc.framework.servlet;
 
+import com.mvc.framework.scanner.ControllerScanner;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.annotation.WebServlet;
 import jakarta.servlet.http.HttpServlet;
@@ -7,6 +8,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
 import java.util.Enumeration;
 import java.util.Map;
 
@@ -24,10 +26,29 @@ public class FrontServlet extends HttpServlet {
     
     private static final long serialVersionUID = 1L;
     private boolean debugMode = true;
+    private ControllerScanner controllerScanner;
     
     @Override
     public void init() throws ServletException {
         super.init();
+        
+        // Initialiser le scanner de contrôleurs
+        controllerScanner = new ControllerScanner();
+        
+        // Scanner les packages pour trouver les contrôleurs
+        // On scanne le package du projet test
+        String basePackage = getServletContext().getInitParameter("base-package");
+        if (basePackage == null) {
+            // Package par défaut si non spécifié
+            basePackage = "com.example.controller";
+        }
+        
+        log("Scanning package: " + basePackage);
+        controllerScanner.scanPackage(basePackage);
+        
+        // Afficher les routes trouvées
+        controllerScanner.printRoutes();
+        
         log("FrontServlet initialisé - Mode Debug: " + debugMode);
     }
     
@@ -65,15 +86,163 @@ public class FrontServlet extends HttpServlet {
         response.setContentType("text/html;charset=UTF-8");
         response.setCharacterEncoding("UTF-8");
         
-        try (PrintWriter out = response.getWriter()) {
-            // Génération de la page HTML de debug
-            generateDebugPage(out, request, method);
-        }
+        // Obtenir l'URL de la requête
+        String requestURI = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        String url = requestURI.substring(contextPath.length());
         
         // Log de la requête si en mode debug
         if (debugMode) {
             logRequestInfo(request, method);
+            log("URL demandée: " + url);
         }
+        
+        try (PrintWriter out = response.getWriter()) {
+            // Chercher une route correspondante
+            ControllerScanner.RouteInfo route = controllerScanner.findRoute(url);
+            
+            if (route != null) {
+                // Route trouvée, appeler la méthode du contrôleur
+                try {
+                    Object result = invokeControllerMethod(route, request, response);
+                    
+                    // Afficher le résultat
+                    if (result != null) {
+                        out.println("<!DOCTYPE html>");
+                        out.println("<html lang='fr'>");
+                        out.println("<head>");
+                        out.println("    <meta charset='UTF-8'>");
+                        out.println("    <title>MVC Framework - Sprint 2</title>");
+                        out.println("    <style>");
+                        out.println("        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }");
+                        out.println("        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
+                        out.println("        .header { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; margin-bottom: 20px; }");
+                        out.println("        .result { background: #e8f5e8; padding: 20px; border-radius: 5px; border-left: 4px solid #4CAF50; }");
+                        out.println("        .info { color: #666; font-size: 0.9em; margin-top: 20px; }");
+                        out.println("    </style>");
+                        out.println("</head>");
+                        out.println("<body>");
+                        out.println("    <div class='container'>");
+                        out.println("        <h1 class='header'>🚀 MVC Framework - Sprint 2</h1>");
+                        out.println("        <div class='result'>");
+                        out.println("            <h2>Résultat du contrôleur:</h2>");
+                        out.println("            <p>" + result.toString() + "</p>");
+                        out.println("        </div>");
+                        out.println("        <div class='info'>");
+                        out.println("            <p><strong>URL:</strong> " + url + "</p>");
+                        out.println("            <p><strong>Contrôleur:</strong> " + route.getControllerInstance().getClass().getSimpleName() + "</p>");
+                        out.println("            <p><strong>Méthode:</strong> " + route.getMethod().getName() + "</p>");
+                        out.println("            <p><strong>Méthode HTTP:</strong> " + method + "</p>");
+                        out.println("        </div>");
+                        out.println("    </div>");
+                        out.println("</body>");
+                        out.println("</html>");
+                    }
+                } catch (Exception e) {
+                    // Erreur lors de l'appel du contrôleur
+                    generateErrorPage(out, url, e);
+                }
+            } else {
+                // Aucune route trouvée
+                if (debugMode) {
+                    // En mode debug, afficher la page de debug
+                    generateDebugPage(out, request, method);
+                } else {
+                    // En mode production, afficher une erreur 404
+                    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                    generate404Page(out, url);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Invoque la méthode du contrôleur via réflexion
+     */
+    private Object invokeControllerMethod(ControllerScanner.RouteInfo route, 
+                                        HttpServletRequest request, 
+                                        HttpServletResponse response) throws Exception {
+        Method method = route.getMethod();
+        Object controller = route.getControllerInstance();
+        
+        // Déterminer les paramètres de la méthode
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        Object[] parameters = new Object[parameterTypes.length];
+        
+        // Injecter les paramètres appropriés
+        for (int i = 0; i < parameterTypes.length; i++) {
+            if (parameterTypes[i] == HttpServletRequest.class) {
+                parameters[i] = request;
+            } else if (parameterTypes[i] == HttpServletResponse.class) {
+                parameters[i] = response;
+            } else {
+                // Pour d'autres types, on peut ajouter d'autres injections plus tard
+                parameters[i] = null;
+            }
+        }
+        
+        // Rendre la méthode accessible si elle est privée
+        method.setAccessible(true);
+        
+        // Invoquer la méthode
+        return method.invoke(controller, parameters);
+    }
+    
+    /**
+     * Génère une page d'erreur
+     */
+    private void generateErrorPage(PrintWriter out, String url, Exception e) {
+        out.println("<!DOCTYPE html>");
+        out.println("<html lang='fr'>");
+        out.println("<head>");
+        out.println("    <meta charset='UTF-8'>");
+        out.println("    <title>Erreur - MVC Framework</title>");
+        out.println("    <style>");
+        out.println("        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }");
+        out.println("        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
+        out.println("        .error { background: #ffe6e6; padding: 20px; border-radius: 5px; border-left: 4px solid #ff4444; }");
+        out.println("        .error h2 { color: #cc0000; margin-top: 0; }");
+        out.println("    </style>");
+        out.println("</head>");
+        out.println("<body>");
+        out.println("    <div class='container'>");
+        out.println("        <div class='error'>");
+        out.println("            <h2>❌ Erreur lors de l'exécution</h2>");
+        out.println("            <p><strong>URL:</strong> " + url + "</p>");
+        out.println("            <p><strong>Erreur:</strong> " + e.getMessage() + "</p>");
+        out.println("            <p><strong>Type:</strong> " + e.getClass().getSimpleName() + "</p>");
+        out.println("        </div>");
+        out.println("    </div>");
+        out.println("</body>");
+        out.println("</html>");
+    }
+    
+    /**
+     * Génère une page 404
+     */
+    private void generate404Page(PrintWriter out, String url) {
+        out.println("<!DOCTYPE html>");
+        out.println("<html lang='fr'>");
+        out.println("<head>");
+        out.println("    <meta charset='UTF-8'>");
+        out.println("    <title>404 - Page non trouvée</title>");
+        out.println("    <style>");
+        out.println("        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }");
+        out.println("        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
+        out.println("        .not-found { background: #fff3cd; padding: 20px; border-radius: 5px; border-left: 4px solid #ffc107; }");
+        out.println("        .not-found h2 { color: #856404; margin-top: 0; }");
+        out.println("    </style>");
+        out.println("</head>");
+        out.println("<body>");
+        out.println("    <div class='container'>");
+        out.println("        <div class='not-found'>");
+        out.println("            <h2>🔍 Page non trouvée</h2>");
+        out.println("            <p>L'URL <strong>" + url + "</strong> n'a pas été trouvée.</p>");
+        out.println("            <p>Aucune route correspondante n'a été définie dans les contrôleurs.</p>");
+        out.println("        </div>");
+        out.println("    </div>");
+        out.println("</body>");
+        out.println("</html>");
     }
     
     /**

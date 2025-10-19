@@ -51,7 +51,7 @@
     </dependencies>
 
     <build>
-        <finalName>mvcprojet1</finalName>
+        <finalName>mvcprojet2</finalName>
         
         <plugins>
             <plugin>
@@ -72,7 +72,7 @@
                 <artifactId>tomcat7-maven-plugin</artifactId>
                 <configuration>
                     <port>8081</port>
-                    <path>/mvcprojet1</path>
+                    <path>/mvcprojet2</path>
                     <uriEncoding>UTF-8</uriEncoding>
                 </configuration>
             </plugin>
